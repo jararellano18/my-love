@@ -54,8 +54,8 @@ const letters: Letter[] = [
 let letter: Letter = letters[Math.floor(Math.random() * letters.length)] ?? letters[0]!
 
 // ── Photo rain ─────────────────────────────────────────────────────────────
-const photoModules = import.meta.glob('@/assets/images/*.jpg', { eager: true })
-const photos: string[] = Object.values(photoModules).map((m: any) => m.default)
+const photoModules = import.meta.glob<{ default: string }>('@/assets/images/*.jpg', { eager: true })
+const photos: string[] = Object.values(photoModules).map((m) => m.default)
 
 // Shown when no real photos are loaded yet
 const placeholderColors = [
