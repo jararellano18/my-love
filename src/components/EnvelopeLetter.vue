@@ -34,20 +34,52 @@ const letters: Letter[] = [
     signature: 'Forever yours',
   },
   {
-    greeting: 'My Dearest,',
-    lines: [
-      'Loving you feels less like falling and more like finally arriving home.',
-      'Happy 3rd monthsary. I love you more than words can hold. ♡',
-    ],
-    signature: 'All of me is yours',
-  },
-  {
     greeting: 'To the One I Choose Every Day,',
     lines: [
       'Three months in, and all I feel is lucky — lucky that it gets to be you.',
       'Happy 3rd monthsary, my love. This is only the beginning. ♡',
     ],
     signature: 'Completely yours',
+  },
+  {
+    greeting: 'Hey you,',
+    lines: [
+      'Most days I just want to be wherever you are. No big reason — just you.',
+      'Happy 3rd monthsary. Simple as that. ♡',
+    ],
+    signature: 'Always yours',
+  },
+  {
+    greeting: 'To You,',
+    lines: [
+      'You have a way of making the ordinary feel like something worth paying attention to.',
+      'Happy 3rd monthsary — and thank you for that. ♡',
+    ],
+    signature: 'With love',
+  },
+  {
+    greeting: 'Hi,',
+    lines: [
+      'I did not plan for you. But here we are, three months in, and none of it feels like an accident.',
+      'Happy 3rd monthsary. I am really glad it is you. ♡',
+    ],
+    signature: 'Yours',
+  },
+  {
+    greeting: 'My Dear,',
+    lines: [
+      'Some people walk into your life quietly and rearrange everything without trying. You did that.',
+      'Happy 3rd monthsary. I would not change a thing. ♡',
+    ],
+    signature: 'Love always',
+  },
+  {
+    greeting: 'To the One Worth Keeping,',
+    lines: [
+      'Three months does not sound like much. But it already feels like the beginning of something that matters.',
+      'Happy 3rd monthsary. I cannot wait to see what comes next. ♡',
+    ],
+    signature: 'Still choosing you',
   },
 ]
 
