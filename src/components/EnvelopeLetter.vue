@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 
+// ── Letters ────────────────────────────────────────────────────────────────
 interface Letter {
   greeting: string
   lines: string[]
@@ -49,8 +50,151 @@ const letters: Letter[] = [
     signature: 'Completely yours',
   },
 ]
+
 let letter: Letter = letters[Math.floor(Math.random() * letters.length)] ?? letters[0]!
 
+// ── Photo rain ─────────────────────────────────────────────────────────────
+const photoModules = import.meta.glob('@/assets/images/*.jpg', { eager: true })
+const photos: string[] = Object.values(photoModules).map((m: any) => m.default)
+
+// Shown when no real photos are loaded yet
+const placeholderColors = [
+  '#ffd6d6', '#ffdeba', '#fff4ba', '#d4f4d4',
+  '#d4e8ff', '#e8d4ff', '#ffc4c4', '#c4e8c4',
+]
+
+interface FallingPhoto {
+  id: number
+  src: string | null
+  color: string
+  x: number        // vw from left (used while animating)
+  rotation: number // degrees
+  duration: number // seconds
+  delay: number    // seconds
+  size: number     // px
+  // Drag state — null = controlled by CSS animation
+  posX: number | null
+  posY: number | null
+  isDragging: boolean
+}
+
+const fallingPhotos = ref<FallingPhoto[]>([])
+let spawnTimer: ReturnType<typeof setInterval> | null = null
+let photoCounter = 0
+
+// ── Drag ───────────────────────────────────────────────────────────────────
+// Keyed by pointerId so multiple touches can drag different photos at once
+const activeDrags = new Map<number, {
+  photo: FallingPhoto
+  startPointerX: number
+  startPointerY: number
+  startPhotoX: number
+  startPhotoY: number
+}>()
+
+function getPhotoStyle(photo: FallingPhoto): Record<string, string> {
+  // After first drag: static position, no animation
+  if (photo.posX !== null && photo.posY !== null) {
+    return {
+      width: photo.size + 'px',
+      left: photo.posX + 'px',
+      top: photo.posY + 'px',
+      transform: `rotate(${photo.rotation}deg)`,
+      animation: 'none',
+      zIndex: '200',
+      cursor: photo.isDragging ? 'grabbing' : 'grab',
+      touchAction: 'none',
+    }
+  }
+  // Still falling via CSS animation
+  return {
+    width: photo.size + 'px',
+    left: photo.x + 'vw',
+    '--rot': photo.rotation + 'deg',
+    '--dur': photo.duration + 's',
+    '--delay': photo.delay + 's',
+    cursor: 'grab',
+    touchAction: 'none',
+  }
+}
+
+function onPointerDown(event: PointerEvent, photo: FallingPhoto) {
+  event.preventDefault()
+  event.stopPropagation()
+
+  const el = event.currentTarget as HTMLElement
+  const rect = el.getBoundingClientRect()
+
+  // .photo-rain is position:fixed inset:0, so viewport coords = container coords
+  const startPhotoX = rect.left
+  const startPhotoY = rect.top
+
+  photo.posX = startPhotoX
+  photo.posY = startPhotoY
+  photo.isDragging = true
+
+  el.setPointerCapture(event.pointerId)
+
+  activeDrags.set(event.pointerId, {
+    photo,
+    startPointerX: event.clientX,
+    startPointerY: event.clientY,
+    startPhotoX,
+    startPhotoY,
+  })
+}
+
+function onPointerMove(event: PointerEvent) {
+  const drag = activeDrags.get(event.pointerId)
+  if (!drag) return
+  drag.photo.posX = drag.startPhotoX + (event.clientX - drag.startPointerX)
+  drag.photo.posY = drag.startPhotoY + (event.clientY - drag.startPointerY)
+}
+
+function onPointerUp(event: PointerEvent) {
+  const drag = activeDrags.get(event.pointerId)
+  if (drag) drag.photo.isDragging = false
+  activeDrags.delete(event.pointerId)
+}
+
+function startPhotoRain() {
+  fallingPhotos.value = []
+  photoCounter = 0
+
+  spawnTimer = setInterval(() => {
+    if (photoCounter >= 18) {
+      if (spawnTimer) clearInterval(spawnTimer)
+      return
+    }
+
+    const src = photos.length ? (photos[photoCounter % photos.length] ?? null) : null
+    const color = placeholderColors[photoCounter % placeholderColors.length] ?? '#ffd6d6'
+
+    fallingPhotos.value.push({
+      id: Date.now() + photoCounter,
+      src,
+      color,
+      x: Math.random() * 80 + 5,
+      rotation: (Math.random() - 0.5) * 28,
+      duration: Math.random() * 2 + 2.5,
+      delay: Math.random() * 0.3,
+      size: Math.floor(Math.random() * 40 + 130),
+      posX: null,
+      posY: null,
+      isDragging: false,
+    })
+
+    photoCounter++
+  }, 280)
+  // Photos stay on screen until the envelope is closed
+}
+
+function stopPhotoRain() {
+  if (spawnTimer) { clearInterval(spawnTimer); spawnTimer = null }
+  fallingPhotos.value = []
+}
+
+// ── Envelope ───────────────────────────────────────────────────────────────
 const letterEl = ref<HTMLElement>()
 const envelopeFlapEl = ref<HTMLElement>()
 const isOpen = ref(false)
@@ -63,21 +207,20 @@ function toggle() {
   if (!isOpen.value) {
     isOpen.value = true
     letter = letters[Math.floor(Math.random() * letters.length)] ?? letters[0]!
+
     setTimeout(() => {
       if (envelopeFlapEl.value) envelopeFlapEl.value.style.zIndex = '1'
-
       if (letterEl.value) {
         letterEl.value.style.transform = 'translateY(-88%)'
         letterEl.value.style.zIndex = '2'
       }
-
+      startPhotoRain()
       busy = false
     }, 400)
   } else {
+    stopPhotoRain()
+    if (letterEl.value) letterEl.value.style.transform = ''
 
-    if (letterEl.value) {
-      letterEl.value.style.transform = ''
-    }
     setTimeout(() => {
       if (envelopeFlapEl.value) envelopeFlapEl.value.style.zIndex = '4'
       if (letterEl.value) letterEl.value.style.zIndex = ''
@@ -92,6 +235,26 @@ function toggle() {
   <div class="page">
     <div class="hearts" aria-hidden="true">
       <span v-for="i in 30" :key="i" class="heart" :style="`--i: ${i}`">♡</span>
+    </div>
+
+    <!-- Photo rain -->
+    <div class="photo-rain" aria-hidden="true">
+      <div
+        v-for="photo in fallingPhotos"
+        :key="photo.id"
+        class="falling-photo"
+        :style="getPhotoStyle(photo)"
+        @pointerdown.prevent.stop="onPointerDown($event, photo)"
+        @pointermove="onPointerMove($event)"
+        @pointerup="onPointerUp($event)"
+        @pointercancel="onPointerUp($event)"
+      >
+        <div class="polaroid">
+          <img v-if="photo.src" :src="photo.src" alt="" />
+          <div v-else class="photo-placeholder" :style="{ background: photo.color }" />
+          <div class="polaroid-caption">♡</div>
+        </div>
+      </div>
     </div>
 
     <div class="scene">
@@ -381,6 +544,72 @@ function toggle() {
 
 .hint.hidden {
   opacity: 0;
+}
+
+/* ===== Photo rain ===== */
+.photo-rain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 100;
+}
+
+.falling-photo {
+  position: absolute;
+  top: -220px;
+  pointer-events: auto;
+  user-select: none;
+  animation: photo-fall var(--dur) ease-in var(--delay) forwards;
+}
+
+@keyframes photo-fall {
+  0% {
+    transform: translateY(0) rotate(var(--rot));
+    opacity: 0;
+    animation-timing-function: ease-in;
+  }
+  8%  { opacity: 1; }
+  80% {
+    transform: translateY(calc(100vh + 54px)) rotate(var(--rot));
+    animation-timing-function: ease-out;
+  }
+  87% {
+    transform: translateY(calc(100vh + 20px)) rotate(var(--rot));
+    animation-timing-function: ease-in;
+  }
+  93% {
+    transform: translateY(calc(100vh + 60px)) rotate(var(--rot));
+    animation-timing-function: ease-out;
+  }
+  100% {
+    transform: translateY(calc(100vh + 54px)) rotate(var(--rot));
+    opacity: 1;
+  }
+}
+
+.polaroid {
+  background: #fff;
+  padding: 6px 6px 22px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22), 0 1px 4px rgba(0, 0, 0, 0.1);
+  border-radius: 2px;
+}
+
+.polaroid img,
+.photo-placeholder {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+  border-radius: 1px;
+}
+
+.polaroid-caption {
+  text-align: center;
+  font-size: 13px;
+  color: #c0392b;
+  margin-top: 4px;
+  line-height: 1;
 }
 
 /* ===== Responsive ===== */
