@@ -260,7 +260,9 @@ function startPhotoRain() {
 
     // Photo starts at the center of the container (container-relative coords)
     const startX = envW / 2 - size / 2
-    const startY = envH / 2 - size / 2
+    const startY = isMobile
+      ? envH * 0.25 - size / 2   // higher up inside envelope on mobile
+      : envH / 2 - size / 2
 
     // Landing spot in viewport coords → convert to container-relative translation
     const landViewportX = Math.random() * (W - size)
