@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, nextTick } from 'vue'
 
 // ── Letters ────────────────────────────────────────────────────────────────
 interface Letter {
@@ -67,15 +67,25 @@ interface FallingPhoto {
   id: number
   src: string | null
   color: string
-  x: number        // vw from left (used while animating)
-  rotation: number // degrees
-  duration: number // seconds
-  delay: number    // seconds
-  size: number     // px
+  size: number      // px
+  // Confetti trajectory (all px, relative to startX/startY)
+  startX: number    // fixed left of photo when launched
+  startY: number    // fixed top of photo when launched
+  txPeak: number    // x translation at arc peak
+  tyPeak: number    // y translation at arc peak (negative = up)
+  txEnd: number     // x translation at landing
+  tyEnd: number     // y translation at landing
+  rotMid: number    // rotation at peak (deg)
+  rotEnd: number    // rotation at landing (deg)
+  duration: number  // seconds
+  delay: number     // seconds
   // Drag state — null = controlled by CSS animation
   posX: number | null
   posY: number | null
   isDragging: boolean
+  // Leave animation
+  isLeaving: boolean
+  leaveDelay: number
 }
 
 const fallingPhotos = ref<FallingPhoto[]>([])
@@ -93,24 +103,47 @@ const activeDrags = new Map<number, {
 }>()
 
 function getPhotoStyle(photo: FallingPhoto): Record<string, string> {
-  // After first drag: static position, no animation
+  // Static position (dragged or frozen for leave animation)
   if (photo.posX !== null && photo.posY !== null) {
+    if (photo.isLeaving) {
+      return {
+        width: photo.size + 'px',
+        left: photo.posX + 'px',
+        top: photo.posY + 'px',
+        opacity: '0',
+        transform: `translateY(-80px) rotate(${photo.rotEnd}deg) scale(0.85)`,
+        animation: 'none',
+        transition: 'opacity 1.4s ease-out, transform 1.4s ease-out',
+        transitionDelay: photo.leaveDelay + 's',
+        zIndex: '200',
+        pointerEvents: 'none',
+        touchAction: 'none',
+      }
+    }
     return {
       width: photo.size + 'px',
       left: photo.posX + 'px',
       top: photo.posY + 'px',
-      transform: `rotate(${photo.rotation}deg)`,
+      transform: `rotate(${photo.rotEnd}deg)`,
       animation: 'none',
-      zIndex: '200',
+      transition: 'none',
+      opacity: '1',
+      zIndex: photo.isDragging ? '200' : '6',
       cursor: photo.isDragging ? 'grabbing' : 'grab',
       touchAction: 'none',
     }
   }
-  // Still falling via CSS animation
+  // In-flight via CSS animation (confetti trajectory)
   return {
     width: photo.size + 'px',
-    left: photo.x + 'vw',
-    '--rot': photo.rotation + 'deg',
+    left: photo.startX + 'px',
+    top: photo.startY + 'px',
+    '--tx-peak': photo.txPeak + 'px',
+    '--ty-peak': photo.tyPeak + 'px',
+    '--tx-end': photo.txEnd + 'px',
+    '--ty-end': photo.tyEnd + 'px',
+    '--rot-mid': photo.rotMid + 'deg',
+    '--rot-end': photo.rotEnd + 'deg',
     '--dur': photo.duration + 's',
     '--delay': photo.delay + 's',
     cursor: 'grab',
@@ -121,13 +154,24 @@ function getPhotoStyle(photo: FallingPhoto): Record<string, string> {
 function onPointerDown(event: PointerEvent, photo: FallingPhoto) {
   event.preventDefault()
   event.stopPropagation()
+  if (!isOpen.value || photo.isLeaving || busy) return
 
   const el = event.currentTarget as HTMLElement
-  const rect = el.getBoundingClientRect()
 
-  // .photo-rain is position:fixed inset:0, so viewport coords = container coords
-  const startPhotoX = rect.left
-  const startPhotoY = rect.top
+  let startPhotoX: number
+  let startPhotoY: number
+
+  if (photo.posX !== null && photo.posY !== null) {
+    // Already in static position — reuse existing coords directly
+    startPhotoX = photo.posX
+    startPhotoY = photo.posY
+  } else {
+    // Still in CSS animation — extract pure translation from the computed matrix
+    // (avoids bounding-rect distortion caused by the element's rotation)
+    const matrix = new DOMMatrix(window.getComputedStyle(el).transform)
+    startPhotoX = photo.startX + matrix.m41
+    startPhotoY = photo.startY + matrix.m42
+  }
 
   photo.posX = startPhotoX
   photo.posY = startPhotoY
@@ -161,37 +205,119 @@ function startPhotoRain() {
   fallingPhotos.value = []
   photoCounter = 0
 
+  const isMobile = window.innerWidth <= 540
+  const count = isMobile
+    ? Math.floor(Math.random() * 2) + 3   // 3–4 on mobile
+    : Math.floor(Math.random() * 5) + 12  // 12–16 on desktop
+
+  // Coordinates are now relative to .envelope-container since .photo-rain lives inside it
+  const envEl = document.querySelector<HTMLElement>('.envelope-container')
+  const envRect = envEl?.getBoundingClientRect()
+  const envW = envRect?.width ?? 500
+  const envH = envRect?.height ?? 320
+  const envLeft = envRect?.left ?? (window.innerWidth - envW) / 2
+  const envTop = envRect?.top ?? (window.innerHeight - envH) / 2
+
+  const W = window.innerWidth
+  const H = window.innerHeight
+
+  // Shuffle photos so each open shows a different random selection
+  const pool = [...photos].sort(() => Math.random() - 0.5)
+
   spawnTimer = setInterval(() => {
-    if (photoCounter >= 18) {
+    if (photoCounter >= count) {
       if (spawnTimer) clearInterval(spawnTimer)
       return
     }
 
-    const src = photos.length ? (photos[photoCounter % photos.length] ?? null) : null
+    const src = pool.length ? (pool[photoCounter % pool.length] ?? null) : null
     const color = placeholderColors[photoCounter % placeholderColors.length] ?? '#ffd6d6'
+    const size = Math.floor(Math.random() * 40 + 130)
+
+    // Photo starts at the center of the container (container-relative coords)
+    const startX = envW / 2 - size / 2
+    const startY = envH / 2 - size / 2
+
+    // Landing spot in viewport coords → convert to container-relative translation
+    const landViewportX = Math.random() * (W - size)
+    const landViewportY = H - size - 16
+    const txEnd = (landViewportX - envLeft) - startX
+    const tyEnd = (landViewportY - envTop) - startY
+
+    // Arc peak — upward burst before gravity takes over.
+    // Clamp horizontal peak to viewport bounds; vertical is unclamped (fine to go above screen).
+    const startViewportX = envLeft + startX
+    const txPeakRaw = txEnd * 0.35 + (Math.random() - 0.5) * 180
+    const peakViewportX = Math.max(0, Math.min(W - size, startViewportX + txPeakRaw))
+    const txPeak = peakViewportX - startViewportX
+    const tyPeak = -(Math.random() * 400 + envTop + envH)
+
+    const rotMid = (Math.random() - 0.5) * 420
+    const rotEnd = (Math.random() - 0.5) * 720
 
     fallingPhotos.value.push({
       id: Date.now() + photoCounter,
       src,
       color,
-      x: Math.random() * 80 + 5,
-      rotation: (Math.random() - 0.5) * 28,
-      duration: Math.random() * 2 + 2.5,
-      delay: Math.random() * 0.3,
-      size: Math.floor(Math.random() * 40 + 130),
+      size,
+      startX,
+      startY,
+      txPeak,
+      tyPeak,
+      txEnd,
+      tyEnd,
+      rotMid,
+      rotEnd,
+      duration: Math.random() * 1 + 2,       // 2–3 s
+      delay: photoCounter * 0.06 + Math.random() * 0.08, // tight stagger burst
       posX: null,
       posY: null,
       isDragging: false,
+      isLeaving: false,
+      leaveDelay: 0,
     })
 
     photoCounter++
-  }, 280)
+  }, 150)
   // Photos stay on screen until the envelope is closed
 }
 
-function stopPhotoRain() {
+async function stopPhotoRain() {
   if (spawnTimer) { clearInterval(spawnTimer); spawnTimer = null }
-  fallingPhotos.value = []
+
+  // Step 1: freeze any photo still in CSS animation at its current visual position
+  const photoEls = Array.from(
+    document.querySelectorAll<HTMLElement>('.falling-photo'),
+  )
+  fallingPhotos.value.forEach((photo, i) => {
+    if (photo.posX === null) {
+      const el = photoEls[i]
+      if (el) {
+        // Read the exact translation from the computed matrix — avoids the
+        // bounding-rect distortion caused by rotation on the element.
+        const matrix = new DOMMatrix(window.getComputedStyle(el).transform)
+        photo.posX = photo.startX + matrix.m41
+        photo.posY = photo.startY + matrix.m42
+      }
+    }
+    // Random stagger so photos don't all vanish at the same moment
+    photo.leaveDelay = Math.random() * 0.5
+  })
+
+  // Step 2: let Vue render the frozen positions (opacity 1, no animation)
+  await nextTick()
+
+  // Step 3: one rAF later — browser has painted frame 1, now trigger the transition
+  requestAnimationFrame(() => {
+    fallingPhotos.value.forEach(photo => {
+      photo.isLeaving = true
+    })
+  })
+
+  // Step 4: remove from DOM after the longest possible transition finishes
+  setTimeout(() => {
+    fallingPhotos.value = []
+  }, 2100) // 1400ms transition + 500ms max delay + buffer
 }
 
 // ── Envelope ───────────────────────────────────────────────────────────────
@@ -222,7 +348,7 @@ function toggle() {
     if (letterEl.value) letterEl.value.style.transform = ''
 
     setTimeout(() => {
-      if (envelopeFlapEl.value) envelopeFlapEl.value.style.zIndex = '4'
+      if (envelopeFlapEl.value) envelopeFlapEl.value.style.zIndex = '5'
       if (letterEl.value) letterEl.value.style.zIndex = ''
       isOpen.value = false
       busy = false
@@ -237,26 +363,6 @@ function toggle() {
       <span v-for="i in 30" :key="i" class="heart" :style="`--i: ${i}`">♡</span>
     </div>
 
-    <!-- Photo rain -->
-    <div class="photo-rain" aria-hidden="true">
-      <div
-        v-for="photo in fallingPhotos"
-        :key="photo.id"
-        class="falling-photo"
-        :style="getPhotoStyle(photo)"
-        @pointerdown.prevent.stop="onPointerDown($event, photo)"
-        @pointermove="onPointerMove($event)"
-        @pointerup="onPointerUp($event)"
-        @pointercancel="onPointerUp($event)"
-      >
-        <div class="polaroid">
-          <img v-if="photo.src" :src="photo.src" alt="" />
-          <div v-else class="photo-placeholder" :style="{ background: photo.color }" />
-          <div class="polaroid-caption">♡</div>
-        </div>
-      </div>
-    </div>
-
     <div class="scene">
       <div class="envelope-container" :class="{ open: isOpen }" role="button" tabindex="0" aria-label="Open letter"
         @click="toggle" @keydown.enter="toggle" @keydown.space.prevent="toggle">
@@ -268,6 +374,19 @@ function toggle() {
           <div class="flap-wrapper" ref="envelopeFlapEl">
             <div class="flap-face" />
             <span class="seal">❤</span>
+          </div>
+
+          <!-- Photos live inside the envelope, same layer as the letter -->
+          <div class="photo-rain" aria-hidden="true">
+            <div v-for="photo in fallingPhotos" :key="photo.id" class="falling-photo" :style="getPhotoStyle(photo)"
+              @pointerdown.prevent.stop="onPointerDown($event, photo)" @pointermove="onPointerMove($event)"
+              @pointerup="onPointerUp($event)" @pointercancel="onPointerUp($event)" @click.stop>
+              <div class="polaroid">
+                <img v-if="photo.src" :src="photo.src" alt="" />
+                <div v-else class="photo-placeholder" :style="{ background: photo.color }" />
+                <div class="polaroid-caption">♡</div>
+              </div>
+            </div>
           </div>
 
           <div class="letter" ref="letterEl">
@@ -350,8 +469,10 @@ function toggle() {
 .envelope-container {
   --env-w: 500px;
   --env-h: 320px;
-  --env-hw: 250px; /* half width  */
-  --env-hh: 160px; /* half height */
+  --env-hw: 250px;
+  /* half width  */
+  --env-hh: 160px;
+  /* half height */
 
   position: relative;
   width: var(--env-w);
@@ -359,12 +480,8 @@ function toggle() {
   cursor: pointer;
   user-select: none;
   outline: none;
-  transition: filter 0.25s;
 }
 
-.envelope-container:hover {
-  filter: drop-shadow(0 18px 36px rgba(0, 0, 0, 0.2));
-}
 
 /* Letter */
 .letter {
@@ -376,7 +493,7 @@ function toggle() {
   background: #fffef5;
   border-radius: 3px;
   padding: 26px 30px;
-  z-index: 1;
+  z-index: 2;
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
   transition: transform 0.7s cubic-bezier(0.34, 1.1, 0.64, 1);
   pointer-events: none;
@@ -428,8 +545,14 @@ function toggle() {
   transition: transform 0.2s ease;
 }
 
-.envelope-container:hover .envelope {
+.envelope-container:hover:not(:has(.falling-photo:hover)) .envelope {
   transform: translateY(-3px);
+}
+
+.envelope-container:hover:not(:has(.falling-photo:hover)) .env-back {
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.22),
+    0 2px 6px rgba(0, 0, 0, 0.1);
 }
 
 .env-back {
@@ -441,6 +564,7 @@ function toggle() {
     0 10px 36px rgba(0, 0, 0, 0.18),
     0 2px 6px rgba(0, 0, 0, 0.08);
   z-index: 1;
+  transition: box-shadow 0.25s ease;
 }
 
 /* Fold triangles */
@@ -457,7 +581,7 @@ function toggle() {
   border-left: var(--env-hw) solid transparent;
   border-right: var(--env-hw) solid transparent;
   border-bottom: var(--env-hh) solid #d4a870;
-  z-index: 3;
+  z-index: 4;
 }
 
 /* left side crease */
@@ -467,7 +591,7 @@ function toggle() {
   border-top: var(--env-hh) solid transparent;
   border-bottom: var(--env-hh) solid transparent;
   border-left: var(--env-hw) solid #dcb07a;
-  z-index: 3;
+  z-index: 4;
 }
 
 /* right side crease */
@@ -477,7 +601,7 @@ function toggle() {
   border-top: var(--env-hh) solid transparent;
   border-bottom: var(--env-hh) solid transparent;
   border-right: var(--env-hw) solid #dcb07a;
-  z-index: 3;
+  z-index: 4;
 }
 
 /* Flap */
@@ -489,7 +613,7 @@ function toggle() {
   height: var(--env-hh);
   transform-origin: top center;
   transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-  z-index: 4;
+  z-index: 5;
 }
 
 .envelope-container.open .flap-wrapper {
@@ -546,44 +670,70 @@ function toggle() {
   opacity: 0;
 }
 
-/* ===== Photo rain ===== */
+/* ===== Photo confetti — lives inside .envelope-container ===== */
 .photo-rain {
-  position: fixed;
+  position: absolute;
   inset: 0;
   pointer-events: none;
-  overflow: hidden;
-  z-index: 100;
+  overflow: visible;
+  /* no z-index → no stacking context → children compete directly with .envelope */
 }
 
 .falling-photo {
   position: absolute;
-  top: -220px;
   pointer-events: auto;
   user-select: none;
-  animation: photo-fall var(--dur) ease-in var(--delay) forwards;
+  animation: confetti-fly var(--dur) linear var(--delay) forwards;
 }
 
-@keyframes photo-fall {
+@keyframes confetti-fly {
+
+  /* Rising — behind envelope */
   0% {
-    transform: translateY(0) rotate(var(--rot));
+    z-index: 0;
+    transform: translate(0, 0) rotate(0deg) scale(0.1);
     opacity: 0;
-    animation-timing-function: ease-in;
+    animation-timing-function: cubic-bezier(0.2, 0, 0.4, 1);
   }
-  8%  { opacity: 1; }
+
+  8% {
+    z-index: 0;
+    opacity: 1;
+    transform: translate(calc(var(--tx-peak) * 0.15),
+        calc(var(--ty-peak) * 0.3)) rotate(calc(var(--rot-mid) * 0.1)) scale(1);
+  }
+
+  /* Arc peak — still rising, still behind */
+  32% {
+    z-index: 0;
+    transform: translate(var(--tx-peak), var(--ty-peak)) rotate(var(--rot-mid));
+    animation-timing-function: cubic-bezier(0.4, 0, 0.8, 1);
+  }
+
+  /* Falling — now in front */
+  33% {
+    z-index: 200;
+  }
+
+  /* Land */
   80% {
-    transform: translateY(calc(100vh + 54px)) rotate(var(--rot));
+    transform: translate(var(--tx-end), var(--ty-end)) rotate(var(--rot-end));
     animation-timing-function: ease-out;
   }
+
+  /* Bounce */
   87% {
-    transform: translateY(calc(100vh + 20px)) rotate(var(--rot));
+    transform: translate(var(--tx-end), calc(var(--ty-end) - 22px)) rotate(var(--rot-end));
     animation-timing-function: ease-in;
   }
-  93% {
-    transform: translateY(calc(100vh + 60px)) rotate(var(--rot));
-    animation-timing-function: ease-out;
+
+  94% {
+    transform: translate(var(--tx-end), var(--ty-end)) rotate(var(--rot-end));
   }
+
   100% {
-    transform: translateY(calc(100vh + 54px)) rotate(var(--rot));
+    z-index: 200;
+    transform: translate(var(--tx-end), var(--ty-end)) rotate(var(--rot-end));
     opacity: 1;
   }
 }
@@ -626,23 +776,25 @@ function toggle() {
   }
 
   .letter {
-    padding: 18px 20px;
+    padding: 13px 16px;
+    bottom: 2%;
+    /* taller card → more room for wrapped text */
   }
 
   .letter .greeting {
-    font-size: 15px;
-    margin-bottom: 10px;
-  }
-
-  .letter p {
-    font-size: 12px;
-    line-height: 1.8;
+    font-size: 14px;
     margin-bottom: 8px;
   }
 
+  .letter p {
+    font-size: 11.5px;
+    line-height: 1.65;
+    margin-bottom: 5px;
+  }
+
   .letter .signature {
-    font-size: 13px;
-    margin-top: 12px;
+    font-size: 12px;
+    margin-top: 8px;
   }
 
   .hint {
@@ -660,15 +812,24 @@ function toggle() {
   }
 
   .letter {
-    padding: 14px 16px;
+    padding: 10px 13px;
+    bottom: 1%;
   }
 
   .letter .greeting {
     font-size: 13px;
+    margin-bottom: 6px;
   }
 
   .letter p {
+    font-size: 10.5px;
+    line-height: 1.6;
+    margin-bottom: 4px;
+  }
+
+  .letter .signature {
     font-size: 11px;
+    margin-top: 6px;
   }
 }
 </style>
