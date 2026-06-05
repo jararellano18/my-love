@@ -58,20 +58,12 @@ const letters: Letter[] = [
     signature: 'With love',
   },
   {
-    greeting: 'Hi,',
+    greeting: 'Hi Love,',
     lines: [
       'I did not plan for you. But here we are, three months in, and none of it feels like an accident.',
       'Happy 3rd monthsary. I am really glad it is you. ♡',
     ],
     signature: 'Yours',
-  },
-  {
-    greeting: 'My Dear,',
-    lines: [
-      'Some people walk into your life quietly and rearrange everything without trying. You did that.',
-      'Happy 3rd monthsary. I would not change a thing. ♡',
-    ],
-    signature: 'Love always',
   },
   {
     greeting: 'To the One Worth Keeping,',
